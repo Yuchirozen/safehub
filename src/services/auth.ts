@@ -9,7 +9,27 @@ import {
 import type { User as FirebaseUser } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 import { auth, db, googleProvider } from './firebase';
+import { supabase, isSupabaseEnabled, supabaseUpsert } from './supabase';
 import type { UserProfile, UserRole, RoleApprovalStatus } from '../types';
+
+// Helper: persist user profile to Supabase
+async function saveProfileToSupabase(profile: UserProfile): Promise<void> {
+  if (!isSupabaseEnabled) return;
+  await supabaseUpsert('user_profiles', {
+    uid: profile.uid,
+    name: profile.name,
+    email: profile.email,
+    phone: profile.phone,
+    role: profile.role,
+    approval_status: profile.approvalStatus,
+    blood_type: (profile as any).bloodType,
+    medical_conditions: (profile as any).medicalConditions,
+    mobility_needs: (profile as any).mobilityNeeds,
+    assigned_shelter_id: (profile as any).assignedShelterId,
+    created_at: profile.createdAt,
+    updated_at: profile.updatedAt
+  }, 'uid').catch(e => console.warn('[Supabase] saveProfileToSupabase failed:', e));
+}
 
 export const isSensitiveRole = (role: UserRole): boolean => {
   return ['rescue_team', 'admin', 'doctor', 'shelter_staff'].includes(role);
@@ -259,6 +279,10 @@ export const loginWithGoogle = async (preferredRole: UserRole = 'citizen'): Prom
       updatedAt: Date.now()
     };
 
+    // Save to Supabase (primary)
+    await saveProfileToSupabase(newProfile);
+
+    // Save to Firestore (secondary)
     try {
       await setDoc(doc(db, 'users', user.uid), newProfile);
     } catch (err) {
@@ -268,23 +292,26 @@ export const loginWithGoogle = async (preferredRole: UserRole = 'citizen'): Prom
     localStorage.setItem('safehub_active_profile', JSON.stringify(newProfile));
     return newProfile;
   } catch (firebaseErr: any) {
-    console.warn('Google popup error, falling back to seamless Google login:', firebaseErr);
-    // Graceful Instant Google OAuth Fallback
-    const mockUid = 'google_' + Date.now();
-    const approvalStatus: RoleApprovalStatus = isSensitiveRole(preferredRole) ? 'pending_approval' : 'approved';
-    const mockGoogleProfile: UserProfile = {
-      uid: mockUid,
-      name: 'Google User (' + preferredRole.toUpperCase() + ')',
-      email: 'user.google@safehub.local',
-      phone: '+91 98450 99911',
-      role: preferredRole,
-      approvalStatus,
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    };
-    localStorage.setItem(`safehub_profile_${mockUid}`, JSON.stringify(mockGoogleProfile));
-    localStorage.setItem('safehub_active_profile', JSON.stringify(mockGoogleProfile));
-    return mockGoogleProfile;
+    console.error('Google Sign-In failed:', firebaseErr);
+    const code = firebaseErr?.code || '';
+    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+      throw new Error('Sign-in was cancelled. Please try again.');
+    }
+    if (code === 'auth/popup-blocked') {
+      throw new Error('Pop-up was blocked by your browser. Please allow pop-ups for this site and try again.');
+    }
+    if (code === 'auth/unauthorized-domain') {
+      throw new Error('This domain is not authorized for Google Sign-In. Please contact support or use email/password login.');
+    }
+    if (code === 'auth/network-request-failed') {
+      throw new Error('Network error. Please check your internet connection and try again.');
+    }
+    // Generic Firebase error — surface it clearly
+    throw new Error(
+      firebaseErr?.message
+        ? `Google Sign-In failed: ${firebaseErr.message}`
+        : 'Google Sign-In failed. Please try email/password login or contact support.'
+    );
   }
 };
 
@@ -305,6 +332,36 @@ export const logout = async (): Promise<void> => {
 };
 
 export const getUserProfile = async (uid: string): Promise<UserProfile | null> => {
+  // 1. Try Supabase
+  if (isSupabaseEnabled && supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('uid', uid)
+        .single();
+      if (!error && data) {
+        return {
+          uid: data.uid,
+          name: data.name,
+          email: data.email,
+          phone: data.phone || '',
+          role: data.role as UserRole,
+          approvalStatus: data.approval_status as RoleApprovalStatus,
+          bloodType: data.blood_type,
+          medicalConditions: data.medical_conditions,
+          mobilityNeeds: data.mobility_needs,
+          assignedShelterId: data.assigned_shelter_id,
+          createdAt: Number(data.created_at) || Date.now(),
+          updatedAt: Number(data.updated_at) || Date.now()
+        };
+      }
+    } catch (sbErr) {
+      console.warn('[Supabase] getUserProfile failed:', sbErr);
+    }
+  }
+
+  // 2. Try Firestore
   try {
     const docRef = doc(db, 'users', uid);
     const docSnap = await getDoc(docRef);
@@ -315,7 +372,7 @@ export const getUserProfile = async (uid: string): Promise<UserProfile | null> =
     console.warn('Error reading user profile from Firestore:', err);
   }
 
-  // fallback to localStorage
+  // 3. Fallback to localStorage
   const cached = localStorage.getItem(`safehub_profile_${uid}`);
   if (cached) {
     try {
@@ -331,6 +388,28 @@ export const updateUserProfile = async (uid: string, updates: Partial<UserProfil
     ...updates,
     updatedAt: Date.now()
   };
+
+  // Sync to Supabase
+  if (isSupabaseEnabled && supabase) {
+    supabase
+      .from('user_profiles')
+      .update({
+        name: updates.name,
+        email: updates.email,
+        phone: updates.phone,
+        role: updates.role,
+        approval_status: updates.approvalStatus,
+        blood_type: updates.bloodType,
+        medical_conditions: updates.medicalConditions,
+        mobility_needs: updates.mobilityNeeds,
+        assigned_shelter_id: updates.assignedShelterId,
+        updated_at: Date.now()
+      })
+      .eq('uid', uid)
+      .then(({ error }) => {
+        if (error) console.warn('[Supabase] updateUserProfile failed:', error);
+      });
+  }
 
   try {
     const docRef = doc(db, 'users', uid);

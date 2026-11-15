@@ -14,6 +14,7 @@ import {
   addDoc
 } from 'firebase/firestore';
 import { db } from './firebase';
+import { supabase, isSupabaseEnabled, supabaseUpsert, supabaseInsert, supabaseSelectAll, fetchSupabaseShelters } from './supabase';
 import type {
   Shelter,
   ShelterResources,
@@ -143,13 +144,19 @@ export const subscribeShelters = (callback: (shelters: Shelter[]) => void) => {
   backendShelterListeners.push(callback);
   startBackendShelterPoll();
 
-  // Immediately call with whatever we have, and fetch backend shelters right away
-  fetchBackendShelters().then(backendShelters => {
-    const base = fallbackStore.shelters.length > 0 ? fallbackStore.shelters : SEED_SHELTERS;
+  // Fetch from Supabase first (most up-to-date), then merge with seed + backend
+  const loadInitial = async () => {
+    const [supabaseShelters, backendShelters] = await Promise.all([
+      isSupabaseEnabled ? fetchSupabaseShelters() : Promise.resolve([]),
+      fetchBackendShelters()
+    ]);
+    let base = fallbackStore.shelters.length > 0 ? fallbackStore.shelters : [...SEED_SHELTERS];
+    if (supabaseShelters.length > 0) base = mergeWithBackendShelters(base, supabaseShelters as Shelter[]);
     const merged = mergeWithBackendShelters(base, backendShelters);
     fallbackStore.shelters = merged;
     callback(merged);
-  }).catch(() => {
+  };
+  loadInitial().catch(() => {
     callback(fallbackStore.shelters.length > 0 ? fallbackStore.shelters : SEED_SHELTERS);
   });
 
@@ -230,6 +237,20 @@ export const updateShelterOccupancy = async (
     status,
     updatedAt: Date.now()
   };
+
+  if (isSupabaseEnabled && supabase) {
+    supabase
+      .from('shelters')
+      .update({
+        current_occupancy: occupancy,
+        status,
+        updated_at: Date.now()
+      })
+      .eq('id', shelterId)
+      .then(({ error }) => {
+        if (error) console.warn('[Supabase] Failed to update occupancy:', error);
+      });
+  }
 
   try {
     await updateDoc(shelterRef, updatePayload);
@@ -314,6 +335,29 @@ export const createShelter = async (shelter: Omit<Shelter, 'id' | 'createdAt' | 
   // Notify all active listeners immediately
   backendShelterListeners.forEach(cb => cb([...fallbackStore.shelters]));
 
+  // 1. Try Supabase first (primary database)
+  if (isSupabaseEnabled) {
+    const { error } = await supabaseUpsert('shelters', {
+      id: fullShelter.id,
+      name: fullShelter.name,
+      address: fullShelter.address,
+      lat: fullShelter.coordinates?.lat,
+      lng: fullShelter.coordinates?.lng,
+      capacity: fullShelter.capacity,
+      current_occupancy: fullShelter.currentOccupancy,
+      status: fullShelter.status,
+      verification_status: fullShelter.verificationStatus,
+      medical_available: fullShelter.medicalAvailable,
+      contact_phone: fullShelter.contactPhone,
+      facilities: fullShelter.facilities,
+      description: fullShelter.description,
+      created_at: fullShelter.createdAt,
+      updated_at: fullShelter.updatedAt
+    });
+    if (error) console.warn('[Supabase] createShelter failed, falling back:', error);
+  }
+
+  // 2. Try Firestore (secondary)
   let firestoreOk = false;
   try {
     await setDoc(doc(db, 'shelters', newId), fullShelter);
@@ -322,7 +366,7 @@ export const createShelter = async (shelter: Omit<Shelter, 'id' | 'createdAt' | 
     console.warn('Firestore setDoc failed, trying backend REST:', err);
   }
 
-  // Fallback: persist via backend server in-memory store
+  // 3. Fallback: persist via backend server in-memory store
   if (!firestoreOk) {
     try {
       await fetch('/api/admin/create-shelter', {
@@ -907,6 +951,22 @@ export const logAdminAction = async (log: Omit<AdminAuditLog, 'id' | 'timestamp'
     id: newId,
     timestamp: Date.now()
   };
+
+  // Write to Supabase (primary)
+  if (isSupabaseEnabled) {
+    await supabaseInsert('admin_audit_logs', {
+      id: full.id,
+      admin_uid: full.adminUid,
+      admin_email: full.adminEmail,
+      action: full.action,
+      target_resource: full.targetResource,
+      target_id: full.targetId,
+      details: full.details,
+      timestamp: full.timestamp
+    }).catch(e => console.warn('[Supabase] logAdminAction failed:', e));
+  }
+
+  // Write to Firestore (secondary)
   try {
     await setDoc(doc(db, 'admin_audit_logs', newId), full);
   } catch (err) {
@@ -1013,6 +1073,25 @@ export const subscribeDiscoveredFacilities = (callback: (facilities: DiscoveredF
 };
 
 export const saveCandidateFacility = async (fac: DiscoveredFacility): Promise<void> => {
+  // Write to Supabase (primary)
+  if (isSupabaseEnabled) {
+    await supabaseUpsert('discovered_facilities', {
+      id: fac.id,
+      name: fac.name,
+      place_type: fac.placeType,
+      address: fac.address,
+      lat: fac.coordinates?.lat,
+      lng: fac.coordinates?.lng,
+      phone: fac.phone,
+      rating: fac.rating,
+      user_ratings_total: fac.userRatingsTotal,
+      is_verified_as_shelter: fac.isVerifiedAsShelter || false,
+      imported_shelter_id: fac.importedShelterId,
+      source: fac.source
+    }).catch(e => console.warn('[Supabase] saveCandidateFacility failed:', e));
+  }
+
+  // Write to Firestore (secondary)
   try {
     await setDoc(doc(db, 'discovered_facilities', fac.id), fac);
   } catch (err) {

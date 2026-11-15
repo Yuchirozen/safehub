@@ -1,0 +1,218 @@
+{
+  "name": "SAFEHUB - Telegram Emergency SOS & Evacuee Dispatcher",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "safehub-events",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "id": "e4f8b1c2-9d3a-4e5f-b6a7-1c2d3e4f5a6b",
+      "name": "SAFEHUB Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        340
+      ],
+      "webhookId": "safehub-events"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.event }}",
+                    "rightValue": "sos_dispatch",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "SOS Alert"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.event }}",
+                    "rightValue": "user_checkin",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "User Check-in"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.event }}",
+                    "rightValue": "flood_alert",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Flood Alert"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d3c2b1a0-8e7f-4a5b-9c6d-2e3f4a5b6c7d",
+      "name": "Route Event",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        460,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "6699683372",
+        "text": "=🚨 <b>SAFEHUB CRITICAL EMERGENCY SOS DISPATCH</b> 🚨\n\n<b>Incident ID:</b> #{{ $json.body.data.id || 'SOS-' + Date.now() }}\n<b>Victim Name:</b> {{ $json.body.data.requesterName || 'Emergency Evacuee' }}\n<b>Phone Number:</b> <code>{{ $json.body.data.requesterPhone || 'Not Provided' }}</code>\n<b>Assistance Category:</b> ⚠️ <i>{{ ($json.body.data.category || 'emergency').toUpperCase() }}</i>\n<b>Priority:</b> 🔴 <b>{{ $json.body.data.priority || 'CRITICAL' }}</b>\n\n📍 <b>Location:</b> {{ $json.body.data.approximateLocation || 'Sector 4, Central Zone' }}\n🧭 <b>Coordinates:</b> <code>{{ $json.body.data.coordinates.lat }}, {{ $json.body.data.coordinates.lng }}</code>\n\n📝 <b>Details & Notes:</b>\n<i>\"{{ $json.body.data.notes || 'Victim urgently requires immediate rescue team dispatch & medical support' }}\"</i>\n\n🗺️ <a href=\"https://www.google.com/maps/dir/?api=1&destination={{ $json.body.data.coordinates.lat }},{{ $json.body.data.coordinates.lng }}\"><b>OPEN IN GOOGLE MAPS DIRECT NAVIGATION</b></a>\n\n<i>Dispatched at {{ new Date($json.body.data.timestamp || Date.now()).toLocaleTimeString() }} via SAFEHUB Grid</i>",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "reply_markup": {
+            "inline_keyboard": [
+              [
+                {
+                  "text": "🗺️ Navigate on Google Maps",
+                  "url": "=https://www.google.com/maps/dir/?api=1&destination={{ $json.body.data.coordinates.lat }},{{ $json.body.data.coordinates.lng }}"
+                }
+              ]
+            ]
+          }
+        }
+      },
+      "id": "c1b2a3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "name": "Send SOS to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        740,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "6699683372",
+        "text": "=👤 <b>NEW EVACUEE LOCATION CHECK-IN</b> 📍\n\n<b>User:</b> {{ $json.body.data.name || 'Anonymous Evacuee' }}\n<b>Role:</b> 🏷️ <i>{{ ($json.body.data.role || 'citizen').toUpperCase() }}</i>\n<b>Contact Phone:</b> <code>{{ $json.body.data.phone || 'Not provided' }}</code>\n<b>Blood Group:</b> {{ $json.body.data.bloodType || 'Unknown' }}\n\n📍 <b>Reported Location:</b> {{ $json.body.data.approximateLocation || 'Live GPS Coordinates' }}\n🧭 <b>GPS Coordinates:</b> <code>{{ $json.body.data.coordinates.lat }}, {{ $json.body.data.coordinates.lng }}</code>\n♿ <b>Mobility & Needs:</b> {{ $json.body.data.mobilityNeeds || 'Standard evacuation capability' }}\n\n🗺️ <a href=\"https://www.google.com/maps/search/?api=1&query={{ $json.body.data.coordinates.lat }},{{ $json.body.data.coordinates.lng }}\"><b>VIEW EVACUEE POSITION ON GOOGLE MAPS</b></a>\n\n<i>Logged at {{ new Date($json.body.data.timestamp || Date.now()).toLocaleTimeString() }} | Ready for rescue coordination</i>",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "reply_markup": {
+            "inline_keyboard": [
+              [
+                {
+                  "text": "📍 View on Google Maps",
+                  "url": "=https://www.google.com/maps/search/?api=1&query={{ $json.body.data.coordinates.lat }},{{ $json.body.data.coordinates.lng }}"
+                }
+              ]
+            ]
+          }
+        }
+      },
+      "id": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+      "name": "Send Check-in to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        740,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "6699683372",
+        "text": "=🌊 <b>CRITICAL FLOOD TELEMETRY ALERT</b> 🌊\n\n<b>Station Device:</b> <code>{{ $json.body.data.deviceId }}</code>\n<b>Monitored Area:</b> {{ $json.body.data.area }}\n<b>Measured Water Depth:</b> 🔴 <b>{{ $json.body.data.waterLevelCm }} cm</b>\n<b>Rate of Rise:</b> 📈 <b>+{{ $json.body.data.rateOfRiseCmPer10Min }} cm / 10 min</b>\n<b>Severity:</b> {{ $json.body.data.severity }}\n\n⚠️ <i>Automated warning: Low-lying zones in {{ $json.body.data.area }} must evacuate immediately.</i>\n\n<a href=\"http://localhost:5173/shelters\"><b>FIND NEAREST ACTIVE HIGH-GROUND SHELTERS</b></a>",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "a3b4c5d6-e7f8-4a9b-0c1d-2e3f4a5b6c7d",
+      "name": "Send Flood Warning to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        740,
+        500
+      ]
+    }
+  ],
+  "connections": {
+    "SAFEHUB Webhook": {
+      "main": [
+        [
+          {
+            "node": "Route Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Event": {
+      "main": [
+        [
+          {
+            "node": "Send SOS to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Check-in to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Flood Warning to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

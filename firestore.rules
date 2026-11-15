@@ -1,0 +1,150 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    function hasRole(role) {
+      return isAuthenticated() && getUserData().role == role && getUserData().approvalStatus == 'approved';
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.admin == true || 
+        getUserData().role == 'admin'
+      );
+    }
+    
+    function isRescue() {
+      return isAdmin() || hasRole('rescue_team');
+    }
+    
+    function isShelterStaff() {
+      return isAdmin() || hasRole('shelter_staff');
+    }
+    
+    function isMedicalVolunteer() {
+      return isAdmin() || (hasRole('doctor') && getUserData().approvalStatus == 'approved');
+    }
+
+    // 1. users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && (
+        (request.resource.data.role in ['citizen', 'vulnerable_evacuee', 'helper'] && request.resource.data.approvalStatus == 'approved') ||
+        (request.resource.data.role in ['doctor', 'shelter_staff', 'rescue_team', 'admin'] && request.resource.data.approvalStatus == 'pending_approval')
+      );
+      allow update: if isOwner(userId) && 
+        request.resource.data.role == resource.data.role && 
+        request.resource.data.approvalStatus == resource.data.approvalStatus
+        || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // 2. shelters collection
+    match /shelters/{shelterId} {
+      allow read: if isAuthenticated();
+      allow write: if isShelterStaff() || isRescue() || isAdmin();
+    }
+
+    // 3. shelter_resources collection
+    match /shelter_resources/{resourceId} {
+      allow read: if isAuthenticated();
+      allow write: if isShelterStaff() || isRescue() || isAdmin();
+    }
+
+    // 4. devices collection
+    match /devices/{deviceId} {
+      allow read: if isRescue() || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // 5. flood_events collection
+    match /flood_events/{eventId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated(); // ESP32 backend or client simulator
+      allow update, delete: if isRescue() || isAdmin();
+    }
+
+    // 6. assistance_requests collection
+    match /assistance_requests/{requestId} {
+      allow read: if isAuthenticated() && (
+        resource.data.requesterUid == request.auth.uid ||
+        resource.data.assignedHelperUid == request.auth.uid ||
+        hasRole('helper') ||
+        isRescue() ||
+        isAdmin()
+      );
+      allow create: if isAuthenticated() && request.resource.data.requesterUid == request.auth.uid;
+      allow update: if isAuthenticated() && (
+        resource.data.requesterUid == request.auth.uid ||
+        resource.data.assignedHelperUid == request.auth.uid ||
+        (hasRole('helper') && resource.data.status == 'pending') ||
+        isRescue() ||
+        isAdmin()
+      );
+      allow delete: if resource.data.requesterUid == request.auth.uid || isAdmin();
+    }
+
+    // 7. medical_volunteers collection
+    match /medical_volunteers/{volunteerId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isOwner(volunteerId) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // 8. alerts collection
+    match /alerts/{alertId} {
+      allow read: if isAuthenticated();
+      allow write: if isRescue() || isAdmin();
+    }
+
+    // 9. rescue_teams collection
+    match /rescue_teams/{teamId} {
+      allow read: if isAuthenticated();
+      allow write: if isRescue() || isAdmin();
+    }
+
+    // 10. incident_reports collection
+    match /incident_reports/{reportId} {
+      allow read: if isRescue() || isAdmin();
+      allow write: if isRescue() || isAdmin();
+    }
+
+    // 11. route_hazards collection
+    match /route_hazards/{hazardId} {
+      allow read: if isAuthenticated();
+      allow write: if isRescue() || isAdmin();
+    }
+
+    // 12. notifications collection
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && (
+        resource.data.recipientUid == request.auth.uid ||
+        resource.data.recipientUid == 'all' ||
+        resource.data.recipientUid == ('role:' + getUserData().role)
+      );
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && resource.data.recipientUid == request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.recipientUid == request.auth.uid || isAdmin();
+    }
+
+    // 13. admin_audit_logs collection
+    match /admin_audit_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated();
+      allow update, delete: if false; // immutable audit log
+    }
+  }
+}

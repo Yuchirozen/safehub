@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { resetPassword } from '../services/auth';
 import type { UserRole } from '../types';
@@ -20,8 +20,15 @@ import { useNavigate } from 'react-router-dom';
 import PatternWaves from '../components/PatternWaves';
 
 export const AuthPage: React.FC = () => {
-  const { login, register, signInGoogle, switchDemoRole } = useAuth();
+  const { profile, login, register, signInGoogle, switchDemoRole } = useAuth();
   const navigate = useNavigate();
+
+  // If already authenticated or profile becomes active, navigate home
+  useEffect(() => {
+    if (profile) {
+      navigate('/', { replace: true });
+    }
+  }, [profile, navigate]);
 
   const [mode, setMode] = useState<'login' | 'register' | 'reset'>('login');
   const [email, setEmail] = useState<string>('');
@@ -63,8 +70,9 @@ export const AuthPage: React.FC = () => {
     setErrorMessage('');
     try {
       await signInGoogle(role);
-      navigate('/');
+      navigate('/', { replace: true });
     } catch (err: any) {
+      console.error('Google sign in error:', err);
       setErrorMessage(err.message || 'Google sign in failed.');
     } finally {
       setLoading(false);

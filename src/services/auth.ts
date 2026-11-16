@@ -12,6 +12,13 @@ import { auth, db, googleProvider } from './firebase';
 import { supabase, isSupabaseEnabled, supabaseUpsert } from './supabase';
 import type { UserProfile, UserRole, RoleApprovalStatus } from '../types';
 
+const withTimeout = <T>(promise: Promise<T>, ms = 1200): Promise<T> => {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('Operation timeout')), ms))
+  ]);
+};
+
 // Helper: persist user profile to Supabase
 async function saveProfileToSupabase(profile: UserProfile): Promise<void> {
   if (!isSupabaseEnabled) return;
@@ -260,8 +267,14 @@ export const loginWithGoogle = async (preferredRole: UserRole = 'citizen'): Prom
     const result = await signInWithPopup(auth, googleProvider);
     const user = result.user;
 
-    const existingProfile = await getUserProfile(user.uid);
+    // Check existing profile with quick 1.2s timeout
+    let existingProfile: UserProfile | null = null;
+    try {
+      existingProfile = await withTimeout(getUserProfile(user.uid), 1200);
+    } catch {}
+
     if (existingProfile) {
+      localStorage.setItem(`safehub_profile_${user.uid}`, JSON.stringify(existingProfile));
       localStorage.setItem('safehub_active_profile', JSON.stringify(existingProfile));
       return existingProfile;
     }
@@ -279,17 +292,16 @@ export const loginWithGoogle = async (preferredRole: UserRole = 'citizen'): Prom
       updatedAt: Date.now()
     };
 
-    // Save to Supabase (primary)
-    await saveProfileToSupabase(newProfile);
-
-    // Save to Firestore (secondary)
-    try {
-      await setDoc(doc(db, 'users', user.uid), newProfile);
-    } catch (err) {
-      console.warn('Could not write Google profile to Firestore:', err);
-    }
+    // Save locally immediately for instantaneous navigation
     localStorage.setItem(`safehub_profile_${user.uid}`, JSON.stringify(newProfile));
     localStorage.setItem('safehub_active_profile', JSON.stringify(newProfile));
+
+    // Save to Supabase (primary) in background
+    saveProfileToSupabase(newProfile).catch(e => console.warn('[Supabase] background profile save error:', e));
+
+    // Secondary Firestore sync (non-blocking with strict timeout)
+    withTimeout(setDoc(doc(db, 'users', user.uid), newProfile), 1000).catch(() => {});
+
     return newProfile;
   } catch (firebaseErr: any) {
     console.error('Google Sign-In failed:', firebaseErr);
@@ -332,16 +344,27 @@ export const logout = async (): Promise<void> => {
 };
 
 export const getUserProfile = async (uid: string): Promise<UserProfile | null> => {
-  // 1. Try Supabase
+  // 1. Check local cache first for instant resolution
+  const cached = localStorage.getItem(`safehub_profile_${uid}`);
+  if (cached) {
+    try {
+      return JSON.parse(cached);
+    } catch {}
+  }
+
+  // 2. Try Supabase
   if (isSupabaseEnabled && supabase) {
     try {
-      const { data, error } = await supabase
-        .from('user_profiles')
-        .select('*')
-        .eq('uid', uid)
-        .single();
+      const { data, error } = await withTimeout(
+        supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('uid', uid)
+          .single(),
+        1200
+      );
       if (!error && data) {
-        return {
+        const p: UserProfile = {
           uid: data.uid,
           name: data.name,
           email: data.email,
@@ -355,29 +378,23 @@ export const getUserProfile = async (uid: string): Promise<UserProfile | null> =
           createdAt: Number(data.created_at) || Date.now(),
           updatedAt: Number(data.updated_at) || Date.now()
         };
+        localStorage.setItem(`safehub_profile_${uid}`, JSON.stringify(p));
+        return p;
       }
     } catch (sbErr) {
-      console.warn('[Supabase] getUserProfile failed:', sbErr);
+      console.warn('[Supabase] getUserProfile timeout/error:', sbErr);
     }
   }
 
-  // 2. Try Firestore
+  // 3. Try Firestore with strict 800ms timeout
   try {
     const docRef = doc(db, 'users', uid);
-    const docSnap = await getDoc(docRef);
-    if (docSnap.exists()) {
+    const docSnap = await withTimeout(getDoc(docRef), 800);
+    if (docSnap && docSnap.exists()) {
       return docSnap.data() as UserProfile;
     }
   } catch (err) {
-    console.warn('Error reading user profile from Firestore:', err);
-  }
-
-  // 3. Fallback to localStorage
-  const cached = localStorage.getItem(`safehub_profile_${uid}`);
-  if (cached) {
-    try {
-      return JSON.parse(cached);
-    } catch {}
+    // Expected when Firestore is offline/unconfigured
   }
 
   return null;

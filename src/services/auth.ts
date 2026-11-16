@@ -42,6 +42,17 @@ export const isSensitiveRole = (role: UserRole): boolean => {
   return ['rescue_team', 'admin', 'doctor', 'shelter_staff'].includes(role);
 };
 
+export const ADMIN_EMAILS = [
+  'admin@safehub.gov.in',
+  'admin@safehub.local',
+  'sankuritejesh123@gmail.com'
+];
+
+export const isSystemAdminEmail = (email?: string): boolean => {
+  if (!email) return false;
+  return ADMIN_EMAILS.map(e => e.toLowerCase()).includes(email.trim().toLowerCase());
+};
+
 // Built-in instant test accounts for seamless evaluation
 export const DEMO_CREDENTIALS: Record<string, { pass: string; profile: UserProfile }> = {
   'admin@safehub.local': {
@@ -267,6 +278,8 @@ export const loginWithGoogle = async (preferredRole: UserRole = 'citizen'): Prom
     const result = await signInWithPopup(auth, googleProvider);
     const user = result.user;
 
+    const isAdmin = isSystemAdminEmail(user.email || '');
+
     // Check existing profile with quick 1.2s timeout
     let existingProfile: UserProfile | null = null;
     try {
@@ -274,19 +287,26 @@ export const loginWithGoogle = async (preferredRole: UserRole = 'citizen'): Prom
     } catch {}
 
     if (existingProfile) {
+      if (isAdmin && (existingProfile.role !== 'admin' || existingProfile.approvalStatus !== 'approved')) {
+        existingProfile.role = 'admin';
+        existingProfile.approvalStatus = 'approved';
+        existingProfile.updatedAt = Date.now();
+        saveProfileToSupabase(existingProfile).catch(() => {});
+      }
       localStorage.setItem(`safehub_profile_${user.uid}`, JSON.stringify(existingProfile));
       localStorage.setItem('safehub_active_profile', JSON.stringify(existingProfile));
       return existingProfile;
     }
 
-    const approvalStatus: RoleApprovalStatus = isSensitiveRole(preferredRole) ? 'pending_approval' : 'approved';
+    const assignedRole: UserRole = isAdmin ? 'admin' : preferredRole;
+    const approvalStatus: RoleApprovalStatus = isAdmin ? 'approved' : (isSensitiveRole(assignedRole) ? 'pending_approval' : 'approved');
 
     const newProfile: UserProfile = {
       uid: user.uid,
-      name: user.displayName || user.email?.split('@')[0] || 'Google User',
+      name: user.displayName || user.email?.split('@')[0] || (isAdmin ? 'SAFEHUB Administrator' : 'Google User'),
       email: user.email || '',
       phone: user.phoneNumber || '',
-      role: preferredRole,
+      role: assignedRole,
       approvalStatus,
       createdAt: Date.now(),
       updatedAt: Date.now()
@@ -348,7 +368,14 @@ export const getUserProfile = async (uid: string): Promise<UserProfile | null> =
   const cached = localStorage.getItem(`safehub_profile_${uid}`);
   if (cached) {
     try {
-      return JSON.parse(cached);
+      const p = JSON.parse(cached) as UserProfile;
+      if (isSystemAdminEmail(p.email) && (p.role !== 'admin' || p.approvalStatus !== 'approved')) {
+        p.role = 'admin';
+        p.approvalStatus = 'approved';
+        localStorage.setItem(`safehub_profile_${uid}`, JSON.stringify(p));
+        localStorage.setItem('safehub_active_profile', JSON.stringify(p));
+      }
+      return p;
     } catch {}
   }
 
@@ -364,13 +391,14 @@ export const getUserProfile = async (uid: string): Promise<UserProfile | null> =
         1200
       );
       if (!error && data) {
+        const isAdmin = isSystemAdminEmail(data.email);
         const p: UserProfile = {
           uid: data.uid,
           name: data.name,
           email: data.email,
           phone: data.phone || '',
-          role: data.role as UserRole,
-          approvalStatus: data.approval_status as RoleApprovalStatus,
+          role: isAdmin ? 'admin' : (data.role as UserRole),
+          approvalStatus: isAdmin ? 'approved' : (data.approval_status as RoleApprovalStatus),
           bloodType: data.blood_type,
           medicalConditions: data.medical_conditions,
           mobilityNeeds: data.mobility_needs,
@@ -391,7 +419,13 @@ export const getUserProfile = async (uid: string): Promise<UserProfile | null> =
     const docRef = doc(db, 'users', uid);
     const docSnap = await withTimeout(getDoc(docRef), 800);
     if (docSnap && docSnap.exists()) {
-      return docSnap.data() as UserProfile;
+      const data = docSnap.data() as UserProfile;
+      const isAdmin = isSystemAdminEmail(data.email);
+      if (isAdmin) {
+        data.role = 'admin';
+        data.approvalStatus = 'approved';
+      }
+      return data;
     }
   } catch (err) {
     // Expected when Firestore is offline/unconfigured

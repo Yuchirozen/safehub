@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { Navbar } from './components/Navbar';
 import { SosModal } from './components/SosModal';
 import { HardwareSimulator } from './components/HardwareSimulator';
+import { Chatbot } from './components/Chatbot';
 import { EmergencyHome } from './pages/EmergencyHome';
 import { NotificationsPage } from './pages/NotificationsPage';
 import { SheltersPage } from './pages/SheltersPage';
@@ -125,6 +126,9 @@ const AppContent: React.FC = () => {
 
       {/* Emergency SOS Modal */}
       <SosModal isOpen={isSosOpen} onClose={() => setIsSosOpen(false)} />
+
+      {/* SAFEHUB AI Floating Chatbot */}
+      <Chatbot shelters={shelters} alerts={alerts} />
 
       {/* Global Emergency Footer */}
       <footer className="border-t border-safe-border bg-safe-card/50 text-xs text-gray-400 mt-12 py-8">

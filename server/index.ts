@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { processChatRequest, checkRateLimit } from './aiService';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -545,6 +546,57 @@ app.get('/api/places/nearby', async (req: Request, res: Response) => {
     return res.status(500).json({
       error: 'SERVER_SERPAPI_EXCEPTION',
       message: err.message || 'Internal error fetching places'
+    });
+  }
+});
+
+// -------------------------------------------------------------
+// AI Chatbot Endpoint (SAFEHUB AI)
+// -------------------------------------------------------------
+app.post('/api/chat', async (req: Request, res: Response) => {
+  const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || 'unknown';
+
+  // 1. Rate limiting
+  if (!checkRateLimit(clientIp, 25, 60000)) {
+    return res.status(429).json({
+      error: 'RATE_LIMIT_EXCEEDED',
+      message: 'Too many requests. Please wait a moment before sending another message to SAFEHUB AI.'
+    });
+  }
+
+  // 2. Input validation
+  const { messages, context } = req.body;
+  if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({
+      error: 'INVALID_REQUEST',
+      message: 'Messages array is required and cannot be empty.'
+    });
+  }
+
+  // Enforce message length & history limits
+  const sanitizedMessages = messages.slice(-15).map((m: any) => ({
+    role: m.role === 'assistant' ? 'assistant' : 'user',
+    content: typeof m.content === 'string' ? m.content.slice(0, 1500) : ''
+  })).filter((m: any) => m.content.trim().length > 0);
+
+  if (sanitizedMessages.length === 0) {
+    return res.status(400).json({
+      error: 'EMPTY_MESSAGE',
+      message: 'Message content cannot be blank.'
+    });
+  }
+
+  try {
+    const reply = await processChatRequest(sanitizedMessages, context);
+    return res.json({
+      reply,
+      timestamp: Date.now()
+    });
+  } catch (err: any) {
+    console.error('[SAFEHUB AI Server Error]', err);
+    return res.status(503).json({
+      error: 'AI_SERVICE_UNAVAILABLE',
+      message: err.message || 'SAFEHUB AI is momentarily overloaded. For immediate life threats, please click the SOS button or dial 112.'
     });
   }
 });
